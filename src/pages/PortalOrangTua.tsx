@@ -24,7 +24,7 @@ export default function PortalOrangTua({ studentOverrideId, isLockedParent, onLo
   // Selected Student state
   const [selectedStudentId, setSelectedStudentId] = useState<string>(() => {
     if (studentOverrideId) return studentOverrideId;
-    const saved = typeof window !== 'undefined' && window.sessionStorage ? sessionStorage.getItem('portal_parent_student_id') : null;
+    const saved = typeof window !== 'undefined' ? (sessionStorage.getItem('portal_parent_student_id') || localStorage.getItem('portal_parent_student_id')) : null;
     if (saved && students.some(s => s.id === saved || s.nisn === saved)) return saved;
     return students.length > 0 ? students[0].id : '';
   });

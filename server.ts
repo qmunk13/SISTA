@@ -95,7 +95,7 @@ app.post("/api/settings", (req, res) => {
 });
 
 // Robust helper to fetch from Google Apps Script with timeout, connection close, and transient socket retries
-async function safeFetchGAS(url: string, options: RequestInit, timeoutMs = 25000, maxRetries = 2): Promise<{ ok: boolean; status: number; text: string; error?: string }> {
+async function safeFetchGAS(url: string, options: RequestInit, timeoutMs = 30000, maxRetries = 2): Promise<{ ok: boolean; status: number; text: string; error?: string }> {
   let lastError: any = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let timer: NodeJS.Timeout | null = null;
@@ -105,18 +105,35 @@ async function safeFetchGAS(url: string, options: RequestInit, timeoutMs = 25000
 
       const mergedHeaders = {
         "Accept": "application/json, text/plain, */*",
-        "Connection": "close",
         ...(options.headers || {})
       };
 
+      // Use redirect: "manual" to reliably capture Google Apps Script echo redirect location
       const resp = await fetch(url, {
         ...options,
         headers: mergedHeaders,
-        redirect: "follow",
+        redirect: "manual",
         signal: controller.signal
       });
 
       if (timer) clearTimeout(timer);
+
+      // If Google Apps Script returned a 302 redirect to its echo service
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get("location");
+        if (loc) {
+          const controller2 = new AbortController();
+          const timer2 = setTimeout(() => controller2.abort(), timeoutMs);
+          const echoResp = await fetch(loc, {
+            headers: { "Accept": "application/json, text/plain, */*" },
+            signal: controller2.signal
+          });
+          clearTimeout(timer2);
+          const text = await echoResp.text();
+          return { ok: echoResp.ok, status: echoResp.status, text };
+        }
+      }
+
       const text = await resp.text();
       return { ok: resp.ok, status: resp.status, text };
     } catch (err: any) {
@@ -593,7 +610,13 @@ function mergeWithRecentUpdates(sheetName: string, baseRows: any[]): any[] {
     TABUNGAN: ['TabunganID', 'tabunganId', 'id'],
     TAGIHAN: ['TagihanID', 'tagihanId', 'id'],
     PEMBAYARAN: ['PembayaranID', 'pembayaranId', 'InvoiceID', 'invoiceId', 'id'],
-    KAS: ['KasID', 'kasId', 'id']
+    KAS: ['KasID', 'kasId', 'id'],
+    HASIL_UJIAN: ['HasilUjianID', 'hasilUjianId', 'idHasil', 'id'],
+    NILAI: ['NilaiID', 'nilaiId', 'id'],
+    LOG_UJIAN: ['LogUjianID', 'logUjianId', 'idLog', 'id'],
+    JAWABAN: ['JawabanID', 'jawabanId', 'id'],
+    SOAL: ['DetailSoalID', 'SoalID', 'soalId', 'idSoal', 'id'],
+    BANK_SOAL: ['BankSoalID', 'bankSoalId', 'id']
   };
   const keysToCheck = idKeyMap[targetKey] || ['id', 'UserID', 'username'];
 
@@ -618,16 +641,31 @@ function mergeWithRecentUpdates(sheetName: string, baseRows: any[]): any[] {
     }
   });
 
-  // If baseRows is smaller than cached.rows, prefer the cached rows merged with any extra
-  if (cached.rows.length >= baseRows.length) {
-    const vals = Array.from(existingMap.values());
-    return vals.length > 0 ? vals : cached.rows;
+  const result: any[] = [];
+  const visitedIds = new Set<string>();
+
+  for (const r of baseRows) {
+    const id = getRowId(r);
+    if (id) {
+      visitedIds.add(id);
+      result.push(existingMap.has(id) ? existingMap.get(id) : r);
+    } else {
+      result.push(r);
+    }
   }
 
-  return baseRows.map(r => {
-    const id = getRowId(r);
-    return id && existingMap.has(id) ? existingMap.get(id) : r;
-  });
+  // Also include any new rows from cached that are not yet in baseRows
+  for (const cr of cached.rows) {
+    const cid = getRowId(cr);
+    if (cid && !visitedIds.has(cid)) {
+      visitedIds.add(cid);
+      result.push(cr);
+    } else if (!cid) {
+      result.push(cr);
+    }
+  }
+
+  return result;
 }
 
 // Direct Fast Sheet Data Endpoint (e.g. /api/sheet-data/TABUNGAN)
@@ -1220,13 +1258,82 @@ app.post("/api/cbt/save-bank-soal", async (req, res) => {
   }
 });
 
+// Helper to retrieve complete existing sheet rows reliably from memory cache, GAS GET_SHEET, or CSV
+async function getFullSheetRows(sheetName: string, spreadsheetId: string, scriptUrl: string): Promise<any[]> {
+  const upper = sheetName.trim().toUpperCase();
+  const cacheKey = `${spreadsheetId}:${upper}`;
+
+  // 1. Check in-memory sheet cache if recent (< 60s)
+  const cached = sheetDataCache.get(cacheKey);
+  if (cached && Array.isArray(cached.rows) && cached.rows.length > 0 && (Date.now() - cached.timestamp < 60000)) {
+    return mergeWithRecentUpdates(upper, cached.rows);
+  }
+
+  // 2. Fetch directly from GAS GET_SHEET (fastest and most accurate mirror of Google Spreadsheet)
+  if (scriptUrl) {
+    try {
+      const gasResp = await safeFetchGAS(scriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "GET_SHEET",
+          sheetName: upper,
+          spreadsheetId
+        })
+      }, 15000);
+
+      if (gasResp.ok && !gasResp.text.startsWith("<")) {
+        const json = JSON.parse(gasResp.text);
+        let rows: any[] = [];
+        if (Array.isArray(json.data)) rows = json.data;
+        else if (json.data && Array.isArray(json.data.data)) rows = json.data.data;
+        else if (Array.isArray(json)) rows = json;
+
+        if (rows.length > 0) {
+          sheetDataCache.set(cacheKey, { rows, timestamp: Date.now() });
+          return mergeWithRecentUpdates(upper, rows);
+        }
+      }
+    } catch (e) {
+      console.warn(`[getFullSheetRows] GAS GET_SHEET for ${upper} failed:`, e);
+    }
+  }
+
+  // 3. Fallback: CSV export via GID
+  try {
+    const gids = await getOrFetchSheetGids(spreadsheetId);
+    const gid = gids[upper];
+    if (gid) {
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`;
+      const csvResp = await fetch(csvUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
+      });
+      if (csvResp.ok) {
+        const csvText = await csvResp.text();
+        const rows = parseCsvToObjects(csvText);
+        if (rows.length > 0) {
+          sheetDataCache.set(cacheKey, { rows, gid, timestamp: Date.now() });
+          return mergeWithRecentUpdates(upper, rows);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`[getFullSheetRows] CSV export for ${upper} failed:`, e);
+  }
+
+  if (cached && Array.isArray(cached.rows)) {
+    return mergeWithRecentUpdates(upper, cached.rows);
+  }
+  return [];
+}
+
 // Dedicated endpoint to save transactions (Tabungan, Tagihan, Pembayaran, Kas) directly to Google Spreadsheet
 app.post("/api/keuangan/transaksi", async (req, res) => {
   try {
-    const { type, records, record, fullList, updateTagihanList } = req.body;
+    const { type, records, record, fullList, updateTagihanList, scriptUrl: customScriptUrl, spreadsheetId: customSsId } = req.body;
     const settings = readSettings();
-    const scriptUrl = settings.scriptUrl || DEFAULT_SETTINGS.scriptUrl;
-    const spreadsheetId = settings.spreadsheetId || DEFAULT_SETTINGS.spreadsheetId;
+    const scriptUrl = customScriptUrl || settings.scriptUrl || DEFAULT_SETTINGS.scriptUrl;
+    const spreadsheetId = customSsId || settings.spreadsheetId || DEFAULT_SETTINGS.spreadsheetId;
 
     if (!scriptUrl) {
       return res.status(400).json({ success: false, error: "Script URL Google Apps Script tidak terkonfigurasi." });
@@ -1239,70 +1346,69 @@ app.post("/api/keuangan/transaksi", async (req, res) => {
       return res.status(400).json({ success: false, error: `Tipe transaksi tidak valid: ${type}. Harus TABUNGAN, TAGIHAN, PEMBAYARAN, atau KAS.` });
     }
 
-    let finalRows: any[] = [];
+    // 1. Fetch current complete dataset from Google Spreadsheet
+    const existingRows = await getFullSheetRows(targetTable, spreadsheetId, scriptUrl);
 
-    if (Array.isArray(fullList) && fullList.length > 0) {
-      finalRows = fullList;
-    } else if (itemsToSave.length > 0) {
-      // 1. Fetch current rows from Google Sheet to ensure zero data loss
-      let existingRows: any[] = [];
-      try {
-        const gids = await getOrFetchSheetGids(spreadsheetId);
-        const gid = gids[targetTable];
-        if (gid) {
-          const csvUrl = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=csv&gid=${encodeURIComponent(gid)}`;
-          const csvResp = await fetch(csvUrl, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
-          });
-          if (csvResp.ok) {
-            const csvText = await csvResp.text();
-            existingRows = parseCsvToObjects(csvText);
-          }
-        }
-      } catch (err) {
-        console.warn(`[Transaksi API] Gagal membaca existing sheet ${targetTable}:`, err);
+    const idKeyMap: Record<string, string[]> = {
+      TABUNGAN: ['TabunganID', 'tabunganId', 'id', 'No'],
+      TAGIHAN: ['TagihanID', 'tagihanId', 'id'],
+      PEMBAYARAN: ['PembayaranID', 'pembayaranId', 'InvoiceID', 'invoiceId', 'id'],
+      KAS: ['KasID', 'kasId', 'id', 'Referensi', 'referensi']
+    };
+    const idKeys = idKeyMap[targetTable] || ['id'];
+
+    const getRowId = (r: any) => {
+      for (const k of idKeys) {
+        if (r && r[k]) return String(r[k]).trim().toUpperCase();
       }
+      return '';
+    };
 
-      // Merge new items with existing rows
-      const idKeyMap: Record<string, string> = {
-        TABUNGAN: 'TabunganID',
-        TAGIHAN: 'TagihanID',
-        PEMBAYARAN: 'PembayaranID',
-        KAS: 'KasID'
-      };
-      const idKey = idKeyMap[targetTable] || 'id';
+    // 2. Merge existingRows with incoming items without losing existing rows
+    const rowMap = new Map<string, any>();
+    existingRows.forEach(r => {
+      const id = getRowId(r);
+      if (id) rowMap.set(id, r);
+    });
 
-      const existingIdSet = new Set(existingRows.map((r: any) => String(r[idKey] || r.id || '').trim().toUpperCase()));
-      const newItemsToAdd = itemsToSave.filter((item: any) => {
-        const itemKey = String(item[idKey] || item.id || '').trim().toUpperCase();
-        return !itemKey || !existingIdSet.has(itemKey);
-      });
+    const candidateItems = Array.isArray(fullList) && fullList.length > 0 ? fullList : itemsToSave;
+    candidateItems.forEach(item => {
+      const id = getRowId(item);
+      if (id) {
+        rowMap.set(id, { ...(rowMap.get(id) || {}), ...item });
+      }
+    });
 
-      const updateMap = new Map<string, any>();
-      itemsToSave.forEach((item: any) => {
-        const itemKey = String(item[idKey] || item.id || '').trim().toUpperCase();
-        if (itemKey && existingIdSet.has(itemKey)) {
-          updateMap.set(itemKey, item);
-        }
-      });
+    // Construct finalRows: keep all original rows (updated), plus any newly appended rows
+    const finalRows: any[] = [];
+    const includedIds = new Set<string>();
 
-      const updatedExisting = existingRows.map((r: any) => {
-        const rKey = String(r[idKey] || r.id || '').trim().toUpperCase();
-        return updateMap.has(rKey) ? { ...r, ...updateMap.get(rKey) } : r;
-      });
+    existingRows.forEach(r => {
+      const id = getRowId(r);
+      if (id) {
+        includedIds.add(id);
+        finalRows.push(rowMap.get(id) || r);
+      } else {
+        finalRows.push(r);
+      }
+    });
 
-      finalRows = [...updatedExisting, ...newItemsToAdd];
-    } else {
-      return res.status(400).json({ success: false, error: "Tidak ada data transaksi yang dikirim." });
-    }
+    candidateItems.forEach(item => {
+      const id = getRowId(item);
+      if (id && !includedIds.has(id)) {
+        includedIds.add(id);
+        finalRows.push(item);
+      } else if (!id) {
+        finalRows.push(item);
+      }
+    });
 
-    // Update server-side live cache immediately so /api/sheet-data/:sheetName returns it right away
+    // Update server-side live cache immediately so client GETs get instant fresh data
     recentSheetUpdates.set(targetTable, { rows: finalRows, timestamp: Date.now() });
-    if (targetTable === 'PEMBAYARAN' && Array.isArray(updateTagihanList) && updateTagihanList.length > 0) {
-      recentSheetUpdates.set('TAGIHAN', { rows: updateTagihanList, timestamp: Date.now() });
-    }
+    const cacheKey = `${spreadsheetId}:${targetTable}`;
+    sheetDataCache.set(cacheKey, { rows: finalRows, timestamp: Date.now() });
 
-    // Push to Google Apps Script via syncData
+    // 3. Push to Google Apps Script via syncData
     const gasResp = await safeFetchGAS(scriptUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -1314,22 +1420,164 @@ app.post("/api/keuangan/transaksi", async (req, res) => {
       })
     });
 
+    // 4. If PEMBAYARAN, automatically update corresponding TAGIHAN & KAS in Google Spreadsheet!
     let tagihanSynced = false;
-    if (targetTable === 'PEMBAYARAN' && Array.isArray(updateTagihanList) && updateTagihanList.length > 0) {
+    if (targetTable === 'PEMBAYARAN') {
       try {
-        await safeFetchGAS(scriptUrl, {
-          method: "POST",
-          headers: { "Content-Type": "text/plain;charset=utf-8" },
-          body: JSON.stringify({
-            action: "syncData",
-            table: "TAGIHAN",
-            data: updateTagihanList,
-            spreadsheetId
-          })
+        const existingTagihan = await getFullSheetRows('TAGIHAN', spreadsheetId, scriptUrl);
+        const tagihanMap = new Map<string, any>();
+        existingTagihan.forEach(t => {
+          const tId = String(t.TagihanID || t.tagihanId || t.id || '').trim().toUpperCase();
+          if (tId) tagihanMap.set(tId, t);
         });
-        tagihanSynced = true;
-      } catch (tErr) {
-        console.warn("[Transaksi API] Sync TAGIHAN alongside PEMBAYARAN error:", tErr);
+
+        let anyTagihanUpdated = false;
+        candidateItems.forEach(pay => {
+          const tId = String(pay.TagihanID || pay.tagihanId || '').trim().toUpperCase();
+          if (tId && tagihanMap.has(tId)) {
+            const existingT = tagihanMap.get(tId);
+            const nominalTagihan = Number(existingT.Nominal || existingT.TotalTagihan || existingT.totalTagihan || 0);
+            const bayarAmount = Number(pay.Nominal || pay.total || pay.totalBayar || 0);
+            const prevDibayar = Number(existingT.TotalBayar || existingT.Dibayar || existingT.paidAmount || 0);
+            const newDibayar = prevDibayar + bayarAmount;
+            const newSisa = Math.max(0, nominalTagihan - newDibayar);
+            const newStatus = newSisa === 0 ? 'LUNAS' : (newDibayar > 0 ? 'SEBAGIAN' : 'BELUM_BAYAR');
+
+            tagihanMap.set(tId, {
+              ...existingT,
+              TotalBayar: newDibayar,
+              Dibayar: newDibayar,
+              SisaTagihan: newSisa,
+              Sisa: newSisa,
+              Status: newStatus,
+              TanggalBayar: pay.Tanggal || pay.tglBayar || new Date().toISOString().slice(0, 10),
+              UpdatedAt: new Date().toISOString()
+            });
+            anyTagihanUpdated = true;
+          }
+        });
+
+        if (Array.isArray(updateTagihanList) && updateTagihanList.length > 0) {
+          updateTagihanList.forEach(ut => {
+            const utId = String(ut.TagihanID || ut.tagihanId || ut.id || '').trim().toUpperCase();
+            if (utId && tagihanMap.has(utId)) {
+              tagihanMap.set(utId, { ...tagihanMap.get(utId), ...ut });
+              anyTagihanUpdated = true;
+            }
+          });
+        }
+
+        if (anyTagihanUpdated) {
+          const finalTagihanRows = existingTagihan.map(t => {
+            const tId = String(t.TagihanID || t.tagihanId || t.id || '').trim().toUpperCase();
+            return tagihanMap.get(tId) || t;
+          });
+
+          recentSheetUpdates.set('TAGIHAN', { rows: finalTagihanRows, timestamp: Date.now() });
+          sheetDataCache.set(`${spreadsheetId}:TAGIHAN`, { rows: finalTagihanRows, timestamp: Date.now() });
+
+          await safeFetchGAS(scriptUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({
+              action: "syncData",
+              table: "TAGIHAN",
+              data: finalTagihanRows,
+              spreadsheetId
+            })
+          });
+          tagihanSynced = true;
+        }
+
+        // Also record Kas Masuk into KAS sheet
+        const existingKas = await getFullSheetRows('KAS', spreadsheetId, scriptUrl);
+        const newKasRows: any[] = [];
+        candidateItems.forEach(pay => {
+          const pNominal = Number(pay.Nominal || pay.total || 0);
+          if (pNominal > 0) {
+            newKasRows.push({
+              KasID: `KAS_IN_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              Tanggal: pay.Tanggal || pay.tglBayar || new Date().toISOString().slice(0, 10),
+              Jenis: 'MASUK',
+              Kategori: 'Pembayaran Siswa',
+              Nominal: pNominal,
+              Debit: pNominal,
+              Kredit: 0,
+              Saldo: 0,
+              Keterangan: `Pembayaran ${pay.NamaSiswa || 'Siswa'} (${pay.MetodePembayaran || 'CASH'}) - Kwitansi: ${pay.InvoiceID || pay.PembayaranID || '-'}`,
+              PetugasID: pay.PetugasID || pay.Petugas || 'Kasir',
+              Referensi: pay.InvoiceID || pay.PembayaranID || '-',
+              Status: 'SUKSES',
+              CreatedAt: new Date().toISOString()
+            });
+          }
+        });
+
+        if (newKasRows.length > 0) {
+          const finalKasRows = [...existingKas, ...newKasRows];
+          recentSheetUpdates.set('KAS', { rows: finalKasRows, timestamp: Date.now() });
+          sheetDataCache.set(`${spreadsheetId}:KAS`, { rows: finalKasRows, timestamp: Date.now() });
+          await safeFetchGAS(scriptUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({
+              action: "syncData",
+              table: "KAS",
+              data: finalKasRows,
+              spreadsheetId
+            })
+          });
+        }
+      } catch (subErr) {
+        console.warn("[Transaksi API] Auto-sync TAGIHAN & KAS alongside PEMBAYARAN error:", subErr);
+      }
+    }
+
+    // 5. If TABUNGAN, automatically mirror into KAS sheet (SETOR = MASUK, TARIK = KELUAR)
+    if (targetTable === 'TABUNGAN') {
+      try {
+        const existingKas = await getFullSheetRows('KAS', spreadsheetId, scriptUrl);
+        const newKasRows: any[] = [];
+        candidateItems.forEach(tab => {
+          const tNominal = Number(tab.Nominal || tab.debit || tab.kredit || 0);
+          const tJenis = String(tab.Jenis || tab.JenisTransaksi || tab.jenis || '').toUpperCase();
+          const isSetor = tJenis === 'SETOR' || (!tJenis.includes('TARIK') && Number(tab.Debit || tab.debit || 0) > 0);
+          if (tNominal > 0) {
+            newKasRows.push({
+              KasID: `KAS_TAB_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              Tanggal: tab.Tanggal || tab.TglTransaksi || new Date().toISOString().slice(0, 10),
+              Jenis: isSetor ? 'MASUK' : 'KELUAR',
+              Kategori: 'Tabungan Siswa',
+              Nominal: tNominal,
+              Debit: isSetor ? tNominal : 0,
+              Kredit: isSetor ? 0 : tNominal,
+              Saldo: 0,
+              Keterangan: `${isSetor ? 'Setoran' : 'Penarikan'} Tabungan ${tab.NamaSiswa || 'Siswa'} - ID: ${tab.TabunganID || tab.id || '-'}`,
+              PetugasID: tab.PetugasID || tab.Petugas || 'Bendahara Tabungan',
+              Referensi: tab.TabunganID || tab.id || '-',
+              Status: 'SUKSES',
+              CreatedAt: new Date().toISOString()
+            });
+          }
+        });
+
+        if (newKasRows.length > 0) {
+          const finalKasRows = [...existingKas, ...newKasRows];
+          recentSheetUpdates.set('KAS', { rows: finalKasRows, timestamp: Date.now() });
+          sheetDataCache.set(`${spreadsheetId}:KAS`, { rows: finalKasRows, timestamp: Date.now() });
+          await safeFetchGAS(scriptUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({
+              action: "syncData",
+              table: "KAS",
+              data: finalKasRows,
+              spreadsheetId
+            })
+          });
+        }
+      } catch (tabKasErr) {
+        console.warn("[Transaksi API] Auto-sync KAS alongside TABUNGAN error:", tabKasErr);
       }
     }
 
@@ -1345,7 +1593,7 @@ app.post("/api/keuangan/transaksi", async (req, res) => {
         count: finalRows.length,
         tagihanSynced,
         error: isHtml
-          ? `Google Apps Script mengembalikan 'Page Not Found' atau HTML Google. Transaksi ${targetTable} tersimpan di memori sistem, namun belum masuk ke Google Spreadsheet. Silakan periksa / deploy ulang Web App Google Apps Script di menu Pengaturan.`
+          ? `Google Apps Script mengembalikan 'Page Not Found' atau HTML Google. Transaksi tersimpan di sistem namun belum masuk ke Google Spreadsheet.`
           : (gasResp.error || "Gagal menghubungi Google Apps Script"),
         gasResponse: rawText.slice(0, 300)
       });
@@ -1362,6 +1610,257 @@ app.post("/api/keuangan/transaksi", async (req, res) => {
   } catch (error: any) {
     console.error("[Keuangan Transaksi Error]:", error);
     res.status(500).json({ success: false, error: error.message || "Gagal menyimpan transaksi ke Google Sheets" });
+  }
+});
+
+// Dedicated endpoint to submit student CBT exam results directly and safely to Google Spreadsheet
+app.post("/api/cbt/submit-ujian", async (req, res) => {
+  try {
+    const { submission, jawabanDetail, logUjian, scriptUrl: customScriptUrl, spreadsheetId: customSsId } = req.body;
+    const settings = readSettings();
+    const scriptUrl = customScriptUrl || settings.scriptUrl || DEFAULT_SETTINGS.scriptUrl;
+    const spreadsheetId = customSsId || settings.spreadsheetId || DEFAULT_SETTINGS.spreadsheetId;
+
+    if (!submission) {
+      return res.status(400).json({ success: false, error: "Data hasil ujian (submission) tidak boleh kosong." });
+    }
+
+    const sUjianId = String(submission.idUjian || submission.UjianID || submission.ujianId || submission.idJadwal || '-').trim();
+    const sNisn = String(submission.nisn || submission.NISN || submission.username || '').trim().replace(/^'+/, '');
+    const sNama = String(submission.namaSiswa || submission.NamaSiswa || submission.name || 'Siswa').trim();
+    const sKelas = String(submission.kelas || submission.Kelas || '').trim();
+    const sMapel = String(submission.mapel || submission.Mapel || submission.namaUjian || 'Ujian').trim();
+    const sNilai = Number(submission.nilaiAkhir ?? submission.NilaiAkhir ?? submission.nilai ?? submission.Nilai ?? 0);
+    const sBenar = Number(submission.benar ?? submission.Benar ?? submission.jmlBenar ?? 0);
+    const sSalah = Number(submission.salah ?? submission.Salah ?? submission.jmlSalah ?? 0);
+    const sTotal = Number(submission.totalSoal ?? submission.TotalSoal ?? (sBenar + sSalah) ?? 0);
+    const sStatus = String(submission.status || submission.Status || submission.statusTuntas || (sNilai >= 65 ? 'LULUS' : 'REMEDIAL')).trim();
+    const sPelanggaran = Number(submission.pelanggaran || submission.Pelanggaran || 0);
+    const sDurasi = String(submission.durasi || submission.Durasi || submission.durasiPengerjaan || '30 Menit');
+    const sTahun = String(submission.tahunAjaran || submission.TahunAjaran || '2026/2027');
+    const sSemester = String(submission.semester || submission.Semester || 'Ganjil');
+    const sNowIso = new Date().toISOString();
+    const sSiswaId = String(submission.siswaId || submission.SiswaID || sNisn || '').replace(/^SIS_/, '');
+    const idHasil = String(submission.HasilUjianID || submission.idHasil || submission.id || `HSL-${Date.now()}`);
+
+    // 1. Sinkronisasi Sheet HASIL_UJIAN
+    const existingHasil = await getFullSheetRows('HASIL_UJIAN', spreadsheetId, scriptUrl);
+    const hasilRow = {
+      HasilUjianID: idHasil,
+      UjianID: sUjianId,
+      NamaUjian: sMapel,
+      SiswaID: sSiswaId,
+      NISN: "'" + sNisn,
+      NamaSiswa: sNama,
+      Kelas: sKelas,
+      Benar: sBenar,
+      Salah: sSalah,
+      TotalSoal: sTotal,
+      Nilai: sNilai,
+      Ranking: 1,
+      StatusTuntas: sStatus,
+      WaktuSelesai: sNowIso,
+      CreatedAt: sNowIso
+    };
+
+    // Update or append in HASIL_UJIAN
+    let foundHasilIdx = -1;
+    for (let i = 0; i < existingHasil.length; i++) {
+      const h = existingHasil[i];
+      const hUjian = String(h.UjianID || h.ujianId || h.idUjian || '').trim();
+      const hNisn = String(h.NISN || h.nisn || '').trim().replace(/^'+/, '');
+      const hId = String(h.HasilUjianID || h.idHasil || h.id || '').trim();
+      if ((hUjian && hNisn && hUjian === sUjianId && hNisn === sNisn) || (hId && hId === idHasil)) {
+        foundHasilIdx = i;
+        break;
+      }
+    }
+
+    const finalHasilRows = [...existingHasil];
+    if (foundHasilIdx >= 0) {
+      finalHasilRows[foundHasilIdx] = { ...finalHasilRows[foundHasilIdx], ...hasilRow };
+    } else {
+      finalHasilRows.push(hasilRow);
+    }
+
+    // Update RAM cache
+    recentSheetUpdates.set('HASIL_UJIAN', { rows: finalHasilRows, timestamp: Date.now() });
+    sheetDataCache.set(`${spreadsheetId}:HASIL_UJIAN`, { rows: finalHasilRows, timestamp: Date.now() });
+
+    // Push to GAS
+    await safeFetchGAS(scriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        action: "syncData",
+        table: "HASIL_UJIAN",
+        data: finalHasilRows,
+        spreadsheetId
+      })
+    });
+
+    // 2. Sinkronisasi Sheet NILAI (Buku Nilai Guru & Rapor)
+    try {
+      const existingNilai = await getFullSheetRows('NILAI', spreadsheetId, scriptUrl);
+      const predikat = sNilai >= 90 ? 'A' : (sNilai >= 80 ? 'B' : (sNilai >= 70 ? 'C' : 'D'));
+      const statusKetuntasan = sNilai >= 75 ? 'TUNTAS' : 'REMEDIAL';
+      const capaian = sNilai >= 75 
+        ? `Menunjukkan penguasaan sangat baik dalam capaian materi ${sMapel}.`
+        : `Perlu pendampingan dan remedial lebih lanjut pada materi ${sMapel}.`;
+
+      let foundNilaiIdx = -1;
+      for (let j = 0; j < existingNilai.length; j++) {
+        const n = existingNilai[j];
+        const nNisn = String(n.NISN || n.nisn || '').trim().replace(/^'+/, '');
+        const nMapel = String(n.Mapel || n.mapel || '').trim().toLowerCase();
+        if (nNisn === sNisn && nMapel === sMapel.toLowerCase()) {
+          foundNilaiIdx = j;
+          break;
+        }
+      }
+
+      const nilaiRecord = {
+        NilaiID: `NIL_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        SiswaID: sSiswaId,
+        NISN: "'" + sNisn,
+        NamaSiswa: sNama,
+        Kelas: sKelas,
+        Mapel: sMapel,
+        Guru: submission.guru || 'Guru Pengampu',
+        Semester: sSemester,
+        TahunAjaran: sTahun,
+        TipePenilaian: submission.jenisAsesmen || 'SUMATIF',
+        SumberNilai: 'Ujian CBT Online',
+        JudulPenilaian: sMapel,
+        NilaiAngka: sNilai,
+        NilaiUTS_STS: sMapel.toUpperCase().includes('STS') || String(submission.jenisAsesmen || '').includes('STS') ? sNilai : '',
+        NilaiUAS_SAS: sMapel.toUpperCase().includes('SAS') || String(submission.jenisAsesmen || '').includes('SAS') ? sNilai : '',
+        NilaiAkhir: sNilai,
+        KKM: 75,
+        Predikat: predikat,
+        CapaianKompetensi: capaian,
+        StatusTuntas: statusKetuntasan,
+        Keterangan: `Selesai CBT (Benar: ${sBenar}, Salah: ${sSalah}, Pelanggaran: ${sPelanggaran})`,
+        TanggalPenilaian: sNowIso.slice(0, 10),
+        CreatedAt: sNowIso,
+        UpdatedAt: sNowIso
+      };
+
+      const finalNilaiRows = [...existingNilai];
+      if (foundNilaiIdx >= 0) {
+        finalNilaiRows[foundNilaiIdx] = { ...finalNilaiRows[foundNilaiIdx], ...nilaiRecord, NilaiID: finalNilaiRows[foundNilaiIdx].NilaiID || nilaiRecord.NilaiID };
+      } else {
+        finalNilaiRows.push(nilaiRecord);
+      }
+
+      recentSheetUpdates.set('NILAI', { rows: finalNilaiRows, timestamp: Date.now() });
+      sheetDataCache.set(`${spreadsheetId}:NILAI`, { rows: finalNilaiRows, timestamp: Date.now() });
+
+      await safeFetchGAS(scriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "syncData",
+          table: "NILAI",
+          data: finalNilaiRows,
+          spreadsheetId
+        })
+      });
+    } catch (eNilai) {
+      console.warn("[CBT Submit Ujian] Auto-sync NILAI error:", eNilai);
+    }
+
+    // 3. Sinkronisasi Sheet LOG_UJIAN (Pengawasan & Log Proktor)
+    try {
+      const existingLogs = await getFullSheetRows('LOG_UJIAN', spreadsheetId, scriptUrl);
+      const newLogRecord = {
+        LogUjianID: `LOG-CBT-${Date.now()}`,
+        UjianID: sUjianId,
+        SiswaID: sSiswaId,
+        NISN: "'" + sNisn,
+        NamaSiswa: sNama,
+        Jenjang: submission.jenjang || 'SMA',
+        Kelas: sKelas,
+        Waktu: sNowIso,
+        Aktivitas: `Selesai mengerjakan ujian ${sMapel} (Nilai: ${sNilai}, Benar: ${sBenar}/${sTotal}, Pelanggaran: ${sPelanggaran})`,
+        Pelanggaran: sPelanggaran,
+        Token: submission.token || '-',
+        IPAddress: req.ip || '127.0.0.1',
+        Status: 'SELESAI'
+      };
+
+      const finalLogRows = [...existingLogs, newLogRecord];
+      recentSheetUpdates.set('LOG_UJIAN', { rows: finalLogRows, timestamp: Date.now() });
+      sheetDataCache.set(`${spreadsheetId}:LOG_UJIAN`, { rows: finalLogRows, timestamp: Date.now() });
+
+      await safeFetchGAS(scriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "syncData",
+          table: "LOG_UJIAN",
+          data: finalLogRows,
+          spreadsheetId
+        })
+      });
+    } catch (eLog) {
+      console.warn("[CBT Submit Ujian] Auto-sync LOG_UJIAN error:", eLog);
+    }
+
+    // 4. Sinkronisasi Sheet JAWABAN (Lembar Jawaban Siswa) jika ada rincian soal
+    if (Array.isArray(jawabanDetail) && jawabanDetail.length > 0) {
+      try {
+        const existingJawaban = await getFullSheetRows('JAWABAN', spreadsheetId, scriptUrl);
+        const newJawabanRows = jawabanDetail.map((jd: any, idx: number) => ({
+          JawabanID: `JAW-${sUjianId}-${sNisn}-${jd.nomorSoal || jd.no || idx + 1}`,
+          UjianID: sUjianId,
+          SiswaID: sSiswaId,
+          NISN: "'" + sNisn,
+          NamaSiswa: sNama,
+          Kelas: sKelas,
+          BankSoalID: submission.bankSoalId || sUjianId,
+          NomorSoal: jd.nomorSoal || jd.no || idx + 1,
+          JawabanSiswa: jd.jawabanSiswa || jd.jawaban || '-',
+          KunciJawaban: jd.kunci || jd.kunciJawaban || '-',
+          IsCorrect: jd.isCorrect ? 'BENAR' : 'SALAH',
+          Nilai: jd.isCorrect ? (jd.bobot || 1) : 0,
+          Tanggal: sNowIso.slice(0, 10),
+          CreatedAt: sNowIso
+        }));
+
+        const existingKeySet = new Set(newJawabanRows.map((nj: any) => nj.JawabanID));
+        const filteredPrevJawaban = existingJawaban.filter((ej: any) => !existingKeySet.has(ej.JawabanID || ej.id));
+        const finalJawabanRows = [...filteredPrevJawaban, ...newJawabanRows];
+
+        recentSheetUpdates.set('JAWABAN', { rows: finalJawabanRows, timestamp: Date.now() });
+        sheetDataCache.set(`${spreadsheetId}:JAWABAN`, { rows: finalJawabanRows, timestamp: Date.now() });
+
+        await safeFetchGAS(scriptUrl, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({
+            action: "syncData",
+            table: "JAWABAN",
+            data: finalJawabanRows,
+            spreadsheetId
+          })
+        });
+      } catch (eJawaban) {
+        console.warn("[CBT Submit Ujian] Auto-sync JAWABAN error:", eJawaban);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Hasil ujian ${sNama} (${sMapel}) berhasil disimpan & disinkronkan ke Google Spreadsheet (Sheet HASIL_UJIAN, NILAI, LOG_UJIAN)!`,
+      idHasil,
+      nilai: sNilai,
+      status: sStatus,
+      totalHasilRows: finalHasilRows.length
+    });
+  } catch (error: any) {
+    console.error("[CBT Submit Ujian Error]:", error);
+    res.status(500).json({ success: false, error: error.message || "Gagal menyimpan hasil ujian ke Google Spreadsheet" });
   }
 });
 

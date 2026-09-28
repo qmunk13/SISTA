@@ -65,6 +65,7 @@ export default function DashboardKeuanganTab({ onNavigateTab }: DashboardKeuanga
     };
     window.addEventListener('erp-db-updated', refreshAll);
     window.addEventListener('erp-db-synced', refreshAll);
+    window.addEventListener('erp-keuangan-updated', refreshAll);
     window.addEventListener('erp-keuangan-cleared', handleClear);
 
     // Initial check: jika data kosong, sinkronkan dari Google Spreadsheet
@@ -82,6 +83,7 @@ export default function DashboardKeuanganTab({ onNavigateTab }: DashboardKeuanga
       clearTimeout(timer2);
       window.removeEventListener('erp-db-updated', refreshAll);
       window.removeEventListener('erp-db-synced', refreshAll);
+      window.removeEventListener('erp-keuangan-updated', refreshAll);
       window.removeEventListener('erp-keuangan-cleared', handleClear);
     };
   }, []);

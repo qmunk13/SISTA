@@ -347,7 +347,7 @@ export interface AppState {
   settings: Settings;
   isLoading: boolean;
   error: string | null;
-  login: () => void;
+  login: (userData?: any, roleId?: string) => void;
   logout: () => void;
   setStudents: (students: Student[]) => void;
   addStudent: (student: Student) => void;

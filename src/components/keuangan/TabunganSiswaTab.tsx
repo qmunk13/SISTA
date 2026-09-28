@@ -122,6 +122,7 @@ export default function TabunganSiswaTab() {
     };
     window.addEventListener('erp-db-updated', handleDbUpdated);
     window.addEventListener('erp-db-synced', refreshFromDb);
+    window.addEventListener('erp-keuangan-updated', refreshFromDb);
     window.addEventListener('erp-keuangan-cleared', handleClear);
 
     // Hydration check in case IndexedDB loads right after mount
@@ -134,6 +135,7 @@ export default function TabunganSiswaTab() {
       clearTimeout(timer2);
       window.removeEventListener('erp-db-updated', handleDbUpdated);
       window.removeEventListener('erp-db-synced', refreshFromDb);
+      window.removeEventListener('erp-keuangan-updated', refreshFromDb);
       window.removeEventListener('erp-keuangan-cleared', handleClear);
     };
   }, [students]);
@@ -753,6 +755,8 @@ export default function TabunganSiswaTab() {
         }
       }
     }
+
+    window.dispatchEvent(new CustomEvent('erp-keuangan-updated', { detail: { action: 'TABUNGAN', tabId } }));
 
     if (syncSuccess) {
       Swal.fire({

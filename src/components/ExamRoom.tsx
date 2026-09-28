@@ -16,6 +16,7 @@ import {
 import confetti from 'canvas-confetti';
 import { QuestionItem, ExamSchedule, UserAccount, ExamSubmission } from '../types';
 import { StorageService } from '../services/storageService';
+import { submitCbtExamResult } from '../services/cbtSubmissionService';
 
 interface ExamRoomProps {
   schedule: ExamSchedule;
@@ -284,6 +285,48 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
 
     // Save submission to database
     StorageService.saveSubmission(submission);
+
+    // Sinkronisasi otomatis langsung ke Google Spreadsheet (Sheet HASIL_UJIAN, NILAI, LOG_UJIAN, JAWABAN)
+    const jawabanDetail = questions.map((q, idx) => {
+      const userAns = answers[idx] || '';
+      return {
+        nomorSoal: q.nomor || idx + 1,
+        jawabanSiswa: userAns || '-',
+        kunci: q.kunci || '-',
+        isCorrect: Boolean(userAns && userAns.toUpperCase() === q.kunci.toUpperCase()),
+        bobot: q.bobot || 1
+      };
+    });
+
+    submitCbtExamResult({
+      idHasil: submission.idHasil,
+      idUjian: submission.idUjian,
+      idJadwal: submission.idJadwal,
+      mapel: submission.mapel,
+      jenjang: submission.jenjang,
+      kelas: submission.kelas,
+      nisn: submission.nisn,
+      namaSiswa: submission.namaSiswa,
+      nilaiMentah: submission.nilaiMentah,
+      nilaiAkhir: submission.nilaiAkhir,
+      nilai: submission.nilaiAkhir,
+      benar: submission.jmlBenar,
+      salah: submission.jmlSalah,
+      totalSoal: submission.totalSoal,
+      pelanggaran: submission.pelanggaran,
+      status: submission.status,
+      durasi: submission.durasiPengerjaan,
+      tahunAjaran: submission.tahunAjaran,
+      token: schedule.token,
+      jawabanDetail
+    }).then(res => {
+      if (res.success) {
+        console.log('[ExamRoom] Hasil ujian berhasil disinkronkan ke Google Spreadsheet:', res.idHasil);
+      }
+    }).catch(err => {
+      console.warn('[ExamRoom] Sinkronisasi ke Google Spreadsheet error:', err);
+    });
+
     setCompletionData(submission);
     setShowConfirmSubmit(false);
     setIsSubmitting(false);

@@ -63,7 +63,13 @@ type TabType =
 function App() {
   const { isAuthenticated, logout, settings, setSettings, students, setStudents, setTeachers, lastSyncedAt, isSyncingGlobal, setLastSyncedAt, setIsSyncingGlobal } = useStore();
   const { role: currentRole, switchRole, canAccess } = useActiveRole();
-  const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    try {
+      const savedTab = sessionStorage.getItem('ERP_active_tab') || localStorage.getItem('ERP_active_tab');
+      if (savedTab) return savedTab as TabType;
+    } catch {}
+    return 'dashboard';
+  });
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAllAppsSheetOpen, setIsAllAppsSheetOpen] = useState(false);
   const [mobileMenuSearch, setMobileMenuSearch] = useState('');
@@ -86,8 +92,17 @@ function App() {
   const [unauthView, setUnauthView] = useState<'portal' | 'login'>('portal');
   const [portalMode, setPortalMode] = useState<'public' | 'spmb-applicant' | 'erp'>(() => {
     try {
-      const saved = sessionStorage.getItem('ERP_active_portal');
-      if (saved === 'spmb-applicant' || saved === 'public' || saved === 'erp') return saved as any;
+      const isAuth = typeof window !== 'undefined' && (
+        localStorage.getItem('sista_is_authenticated') === 'true' ||
+        sessionStorage.getItem('sista_is_authenticated') === 'true' ||
+        !!(sessionStorage.getItem('authenticated_user') || localStorage.getItem('authenticated_user'))
+      );
+      const saved = sessionStorage.getItem('ERP_active_portal') || localStorage.getItem('ERP_active_portal');
+      if (saved === 'spmb-applicant') return 'spmb-applicant';
+      if (isAuth) return 'erp';
+      if (saved === 'public') return 'public';
+      if (saved === 'erp') return 'erp';
+      return isAuth ? 'erp' : 'public';
     } catch {}
     return 'public';
   });
@@ -96,8 +111,22 @@ function App() {
   useEffect(() => {
     try {
       sessionStorage.setItem('ERP_active_portal', portalMode);
+      localStorage.setItem('ERP_active_portal', portalMode);
     } catch {}
   }, [portalMode]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('ERP_active_tab', activeTab);
+      localStorage.setItem('ERP_active_tab', activeTab);
+    } catch {}
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (isAuthenticated && portalMode === 'public') {
+      setPortalMode('erp');
+    }
+  }, [isAuthenticated, portalMode]);
 
   useEffect(() => {
     try {
@@ -287,11 +316,28 @@ function App() {
       sessionStorage.removeItem('portal_parent_student_id');
       sessionStorage.removeItem('authenticated_user');
       sessionStorage.removeItem('current_user_session');
+      sessionStorage.removeItem('sista_is_authenticated');
+      sessionStorage.removeItem('current_active_role_id');
+      sessionStorage.removeItem('ERP_active_tab');
+
+      localStorage.removeItem('portal_active_student_id');
+      localStorage.removeItem('current_auth_student_id');
+      localStorage.removeItem('portal_parent_student_id');
+      localStorage.removeItem('authenticated_user');
+      localStorage.removeItem('current_user_session');
+      localStorage.removeItem('sista_is_authenticated');
+      localStorage.removeItem('current_active_role_id');
+      localStorage.removeItem('ERP_active_tab');
+
+      sessionStorage.setItem('ERP_active_portal', 'public');
+      localStorage.setItem('ERP_active_portal', 'public');
     } catch {}
     setTimeout(() => {
       setIsLoggingOut(false);
       logout();
-    }, 1000);
+      setPortalMode('public');
+      setUnauthView('portal');
+    }, 700);
   };
 
   const renderLogoutConfirmModal = () => (

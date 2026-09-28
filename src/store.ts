@@ -569,12 +569,27 @@ function getInitialSettings() {
   return defaultConf;
 }
 
+export const getInitialAuth = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const isAuthLocal = localStorage.getItem('sista_is_authenticated') === 'true';
+    const isAuthSession = sessionStorage.getItem('sista_is_authenticated') === 'true';
+    const authUserSession = sessionStorage.getItem('authenticated_user');
+    const authUserLocal = localStorage.getItem('authenticated_user');
+    const hasAuthUser = !!(authUserSession || authUserLocal);
+    const hasRole = !!(sessionStorage.getItem('current_active_role_id') || localStorage.getItem('current_active_role_id'));
+    return isAuthLocal || isAuthSession || (hasAuthUser && hasRole);
+  } catch {
+    return false;
+  }
+};
+
 const INITIAL_STUDENTS_LIST = getInitialStudents();
 const INITIAL_TEACHERS_LIST = getInitialTeachers();
 const INITIAL_SETTINGS = getInitialSettings();
 
 export const useStore = create<AppState>()((set) => ({
-  isAuthenticated: false,
+  isAuthenticated: getInitialAuth(),
   students: INITIAL_STUDENTS_LIST,
   teachers: INITIAL_TEACHERS_LIST,
   settings: INITIAL_SETTINGS,
@@ -582,8 +597,51 @@ export const useStore = create<AppState>()((set) => ({
   error: null,
   lastSyncedAt: null,
   isSyncingGlobal: false,
-  login: () => set({ isAuthenticated: true }),
-  logout: () => set({ isAuthenticated: false, students: INITIAL_STUDENTS_LIST, teachers: INITIAL_TEACHERS_LIST }),
+  login: (userData?: any, roleId?: string) => {
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('sista_is_authenticated', 'true');
+        sessionStorage.setItem('sista_is_authenticated', 'true');
+        localStorage.setItem('ERP_active_portal', 'erp');
+        sessionStorage.setItem('ERP_active_portal', 'erp');
+        if (userData) {
+          const serialized = typeof userData === 'string' ? userData : JSON.stringify(userData);
+          localStorage.setItem('authenticated_user', serialized);
+          sessionStorage.setItem('authenticated_user', serialized);
+        }
+        if (roleId) {
+          localStorage.setItem('current_active_role_id', roleId);
+          sessionStorage.setItem('current_active_role_id', roleId);
+        }
+      }
+    } catch {}
+    set({ isAuthenticated: true });
+  },
+  logout: () => {
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('sista_is_authenticated');
+        sessionStorage.removeItem('sista_is_authenticated');
+        localStorage.removeItem('authenticated_user');
+        sessionStorage.removeItem('authenticated_user');
+        localStorage.removeItem('current_active_role_id');
+        sessionStorage.removeItem('current_active_role_id');
+        localStorage.removeItem('portal_active_student_id');
+        sessionStorage.removeItem('portal_active_student_id');
+        localStorage.removeItem('current_auth_student_id');
+        sessionStorage.removeItem('current_auth_student_id');
+        localStorage.removeItem('portal_parent_student_id');
+        sessionStorage.removeItem('portal_parent_student_id');
+        localStorage.removeItem('current_user_session');
+        sessionStorage.removeItem('current_user_session');
+        localStorage.removeItem('ERP_active_tab');
+        sessionStorage.removeItem('ERP_active_tab');
+        localStorage.setItem('ERP_active_portal', 'public');
+        sessionStorage.setItem('ERP_active_portal', 'public');
+      }
+    } catch {}
+    set({ isAuthenticated: false, students: INITIAL_STUDENTS_LIST, teachers: INITIAL_TEACHERS_LIST });
+  },
   setStudents: (students) => {
     const cleaned = students.map(cleanStudentClass);
     db.set('students', cleaned, { skipPush: true });

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { 
   X, UserCheck, CreditCard, Receipt, Wallet, Printer, 
   CheckCircle2, Clock, AlertCircle, ArrowDownRight, ArrowUpRight
@@ -34,6 +34,23 @@ interface DetailSiswaKeuanganModalProps {
 export default function DetailSiswaKeuanganModal({ siswaId, onClose, onPrintInvoice }: DetailSiswaKeuanganModalProps) {
   const { students } = useStore();
   const [activeSubTab, setActiveSubTab] = useState<'TAGIHAN' | 'INVOICE' | 'TABUNGAN'>('TAGIHAN');
+  const [dbVersion, setDbVersion] = useState(0);
+
+  useEffect(() => {
+    const handleDbChange = () => {
+      setDbVersion(v => v + 1);
+    };
+    window.addEventListener('erp-db-updated', handleDbChange);
+    window.addEventListener('erp-db-synced', handleDbChange);
+    window.addEventListener('erp-keuangan-updated', handleDbChange);
+    window.addEventListener('erp-keuangan-cleared', handleDbChange);
+    return () => {
+      window.removeEventListener('erp-db-updated', handleDbChange);
+      window.removeEventListener('erp-db-synced', handleDbChange);
+      window.removeEventListener('erp-keuangan-updated', handleDbChange);
+      window.removeEventListener('erp-keuangan-cleared', handleDbChange);
+    };
+  }, []);
 
   const student = useMemo(() => {
     const q = String(siswaId || '').trim().toLowerCase();
@@ -45,7 +62,7 @@ export default function DetailSiswaKeuanganModal({ siswaId, onClose, onPrintInvo
       String((s as any).registrationCode || (s as any).no_pendaftaran || '').toLowerCase() === q ||
       String(s.name || '').trim().toLowerCase() === q
     );
-  }, [students, siswaId]);
+  }, [students, siswaId, dbVersion]);
 
   const validStudentKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -70,28 +87,28 @@ export default function DetailSiswaKeuanganModal({ siswaId, onClose, onPrintInvo
       addKey((student as any).no_pendaftaran);
     }
     return keys;
-  }, [siswaId, student]);
+  }, [siswaId, student, dbVersion]);
 
   const studentNameLower = (student?.name || '').trim().toLowerCase();
 
-  // DB Data (Normalized from Google Spreadsheet)
+  // DB Data (Normalized from Google Spreadsheet & local DB)
   const allTagihan = useMemo(() => {
     const raw = getValidArray('keuangan_tagihan', 'TAGIHAN', 'tagihan');
     const norm = raw.map((r: any, idx: number) => normalizeTagihanRow(r, idx, students));
     return deduplicateTagihanList(norm);
-  }, [students]);
+  }, [students, dbVersion]);
 
   const allInvoices = useMemo(() => {
     const raw = getValidArray('keuangan_invoices', 'keuangan_pembayaran', 'PEMBAYARAN', 'INVOICE');
     const norm = raw.map((r: any, idx: number) => normalizePembayaranRow(r, idx, students));
     return deduplicatePembayaranList(norm);
-  }, [students]);
+  }, [students, dbVersion]);
 
   const allTabungan = useMemo(() => {
     const raw = getValidArray('keuangan_tabungan', 'TABUNGAN', 'tabungan');
     const norm = raw.map((r: any, idx: number) => normalizeTabunganRow(r, idx, students));
     return deduplicateTabunganList(norm);
-  }, [students]);
+  }, [students, dbVersion]);
 
   const studentTagihan = useMemo(() => {
     return allTagihan.filter(t => {
@@ -252,6 +269,7 @@ export default function DetailSiswaKeuanganModal({ siswaId, onClose, onPrintInvo
                     <th className="p-3">Pos Tagihan</th>
                     <th className="p-3">Periode</th>
                     <th className="p-3 text-right">Tagihan Asli</th>
+                    <th className="p-3 text-right">Terbayar</th>
                     <th className="p-3 text-right">Sisa Tagihan</th>
                     <th className="p-3 text-center">Status</th>
                   </tr>
@@ -259,24 +277,30 @@ export default function DetailSiswaKeuanganModal({ siswaId, onClose, onPrintInvo
                 <tbody className="divide-y divide-slate-100 font-medium">
                   {studentTagihan.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="p-6 text-center text-slate-400">Tidak ada tagihan untuk siswa ini.</td>
+                      <td colSpan={6} className="p-6 text-center text-slate-400">Tidak ada tagihan untuk siswa ini.</td>
                     </tr>
                   ) : (
-                    studentTagihan.map(t => (
-                      <tr key={t.id}>
-                        <td className="p-3 font-bold text-slate-900">{t.namaBiaya}</td>
-                        <td className="p-3 font-mono text-slate-600">{t.periode}</td>
-                        <td className="p-3 text-right font-mono">{fmtRp(t.nominalAsli || t.nominal)}</td>
-                        <td className="p-3 text-right font-mono font-black text-rose-600">{fmtRp(t.nominal)}</td>
-                        <td className="p-3 text-center">
-                          <span className={`px-2 py-0.5 rounded-full font-bold text-[9px] ${
-                            t.status === 'LUNAS' ? 'bg-emerald-100 text-emerald-800' : t.status === 'SEBAGIAN' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
-                          }`}>
-                            {t.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
+                    studentTagihan.map(t => {
+                      const tot = Number(t.totalTagihan || t.nominalAsli || t.nominal || 0);
+                      const paid = Number(t.paidAmount ?? (t as any).totalBayar ?? (t.status === 'LUNAS' ? tot : 0));
+                      const sisa = t.status === 'LUNAS' ? 0 : Number((t as any).sisaTagihan ?? (t as any).sisa ?? Math.max(0, tot - paid));
+                      return (
+                        <tr key={t.id}>
+                          <td className="p-3 font-bold text-slate-900">{t.namaBiaya}</td>
+                          <td className="p-3 font-mono text-slate-600">{t.periode}</td>
+                          <td className="p-3 text-right font-mono">{fmtRp(tot)}</td>
+                          <td className="p-3 text-right font-mono font-bold text-emerald-700">{fmtRp(paid)}</td>
+                          <td className="p-3 text-right font-mono font-black text-rose-600">{fmtRp(sisa)}</td>
+                          <td className="p-3 text-center">
+                            <span className={`px-2 py-0.5 rounded-full font-bold text-[9px] ${
+                              t.status === 'LUNAS' ? 'bg-emerald-100 text-emerald-800' : t.status === 'SEBAGIAN' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                            }`}>
+                              {t.status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

@@ -12,15 +12,15 @@ export interface UserSessionState {
   level: number;
 }
 
-// Get active role from sessionStorage, authenticated user, or memory
+// Get active role from sessionStorage, localStorage, authenticated user, or memory
 export function getActiveRole(): UserRoleItem {
   try {
-    let roleId = typeof window !== 'undefined' && window.sessionStorage
-      ? window.sessionStorage.getItem('current_active_role_id')
+    let roleId = typeof window !== 'undefined'
+      ? (window.sessionStorage?.getItem('current_active_role_id') || window.localStorage?.getItem('current_active_role_id'))
       : null;
 
-    if (!roleId && typeof window !== 'undefined' && window.sessionStorage) {
-      const authUserRaw = window.sessionStorage.getItem('authenticated_user');
+    if (!roleId && typeof window !== 'undefined') {
+      const authUserRaw = window.sessionStorage?.getItem('authenticated_user') || window.localStorage?.getItem('authenticated_user');
       if (authUserRaw) {
         try {
           const authUser = JSON.parse(authUserRaw);
@@ -53,8 +53,9 @@ export function setActiveRole(roleIdOrName: string): UserRoleItem {
   }
   currentActiveRoleId = role.id;
   try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      window.sessionStorage.setItem('current_active_role_id', role.id);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage?.setItem('current_active_role_id', role.id);
+      window.localStorage?.setItem('current_active_role_id', role.id);
     }
   } catch {}
   // Dispatch custom event for realtime UI update

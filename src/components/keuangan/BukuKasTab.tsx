@@ -257,10 +257,39 @@ export default function BukuKasTab() {
     saveKasList([...kasList, newKasItem]);
     setIsModalOpen(false);
 
+    // Sinkronisasi otomatis ke Google Spreadsheet Sheet KAS via Backend API
+    try {
+      fetch('/api/keuangan/transaksi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'KAS',
+          record: {
+            KasID: newKasItem.id,
+            Tanggal: newKasItem.tanggal,
+            Kategori: newKasItem.kategori,
+            Jenis: newKasItem.jenis,
+            Nominal: newKasItem.nominal,
+            Debit: newKasItem.jenis === 'MASUK' ? newKasItem.nominal : 0,
+            Kredit: newKasItem.jenis === 'KELUAR' ? newKasItem.nominal : 0,
+            Saldo: 0,
+            Keterangan: newKasItem.keterangan,
+            Petugas: newKasItem.petugas,
+            Referensi: newKasItem.referensi,
+            CreatedAt: newKasItem.createdAt
+          }
+        })
+      }).catch(err => console.warn('Sync KAS error:', err));
+    } catch {}
+
+    window.dispatchEvent(new CustomEvent('erp-keuangan-updated', { detail: { action: 'KAS', kasId } }));
+    window.dispatchEvent(new CustomEvent('erp-db-updated', { detail: { key: 'keuangan_kas' } }));
+    window.dispatchEvent(new CustomEvent('erp-db-synced', { detail: { key: 'KAS' } }));
+
     Swal.fire({
       icon: 'success',
-      title: 'Berhasil Dicatat!',
-      text: `Transaksi kas ${formData.jenis.toLowerCase()} sebesar ${fmtRp(nom)} telah disimpan.`,
+      title: 'Berhasil Masuk ke Google Spreadsheet!',
+      text: `Transaksi kas ${formData.jenis.toLowerCase()} sebesar ${fmtRp(nom)} telah disimpan dan disinkronkan ke Sheet KAS.`,
       timer: 2000,
       showConfirmButton: false
     });

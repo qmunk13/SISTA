@@ -91,17 +91,28 @@ export default function Login({ onOpenPublicPortal }: LoginProps) {
         }
 
         setActiveRole(targetRoleId);
-        sessionStorage.setItem('current_active_role_id', targetRoleId);
-        sessionStorage.setItem('authenticated_user', JSON.stringify(sheetUserMatch));
+        try {
+          localStorage.setItem('sista_is_authenticated', 'true');
+          sessionStorage.setItem('sista_is_authenticated', 'true');
+          localStorage.setItem('current_active_role_id', targetRoleId);
+          sessionStorage.setItem('current_active_role_id', targetRoleId);
+          localStorage.setItem('authenticated_user', JSON.stringify(sheetUserMatch));
+          sessionStorage.setItem('authenticated_user', JSON.stringify(sheetUserMatch));
+          localStorage.setItem('ERP_active_portal', 'erp');
+          sessionStorage.setItem('ERP_active_portal', 'erp');
 
-        if (targetRoleId === 'RL-026') {
-          const sId = sheetUserMatch.id || sheetUserMatch.userId || cleanInput;
-          sessionStorage.setItem('portal_active_student_id', sId);
-          sessionStorage.setItem('current_auth_student_id', sId);
-        } else if (targetRoleId === 'RL-027') {
-          const sId = sheetUserMatch.id || sheetUserMatch.userId || cleanInput;
-          sessionStorage.setItem('portal_parent_student_id', sId);
-        }
+          if (targetRoleId === 'RL-026') {
+            const sId = sheetUserMatch.id || sheetUserMatch.userId || cleanInput;
+            sessionStorage.setItem('portal_active_student_id', sId);
+            localStorage.setItem('portal_active_student_id', sId);
+            sessionStorage.setItem('current_auth_student_id', sId);
+            localStorage.setItem('current_auth_student_id', sId);
+          } else if (targetRoleId === 'RL-027') {
+            const sId = sheetUserMatch.id || sheetUserMatch.userId || cleanInput;
+            sessionStorage.setItem('portal_parent_student_id', sId);
+            localStorage.setItem('portal_parent_student_id', sId);
+          }
+        } catch {}
 
         recordUserSession({
           id: sheetUserMatch.id || `USR-${targetRoleId}`,
@@ -112,7 +123,7 @@ export default function Login({ onOpenPublicPortal }: LoginProps) {
 
         setTimeout(() => {
           setIsLoggingIn(false);
-          login();
+          login(sheetUserMatch, targetRoleId);
         }, 500);
         return;
       } else {
@@ -131,14 +142,23 @@ export default function Login({ onOpenPublicPortal }: LoginProps) {
 
     if (isValidUser && isValidPass) {
       setActiveRole('RL-001'); // Superadmin
-      sessionStorage.setItem('current_active_role_id', 'RL-001');
-      sessionStorage.setItem('authenticated_user', JSON.stringify({
+      const adminUserObj = {
         id: 'USR_SUPERADMIN',
         username: query,
         nama: 'Super Administrator Utama',
         role: 'SUPERADMIN',
         roleId: 'RL-001'
-      }));
+      };
+      try {
+        localStorage.setItem('sista_is_authenticated', 'true');
+        sessionStorage.setItem('sista_is_authenticated', 'true');
+        localStorage.setItem('current_active_role_id', 'RL-001');
+        sessionStorage.setItem('current_active_role_id', 'RL-001');
+        localStorage.setItem('authenticated_user', JSON.stringify(adminUserObj));
+        sessionStorage.setItem('authenticated_user', JSON.stringify(adminUserObj));
+        localStorage.setItem('ERP_active_portal', 'erp');
+        sessionStorage.setItem('ERP_active_portal', 'erp');
+      } catch {}
 
       recordUserSession({
         id: 'USR-RL-001',
@@ -149,7 +169,7 @@ export default function Login({ onOpenPublicPortal }: LoginProps) {
 
       setTimeout(() => {
         setIsLoggingIn(false);
-        login();
+        login(adminUserObj, 'RL-001');
       }, 500);
       return;
     }
@@ -168,12 +188,31 @@ export default function Login({ onOpenPublicPortal }: LoginProps) {
       });
 
       if (sMatch) {
-        sessionStorage.setItem('portal_active_student_id', sMatch.id);
-        sessionStorage.setItem('current_auth_student_id', sMatch.id);
+        const studentUserObj = {
+          id: sMatch.id,
+          username: sMatch.nisn || sMatch.nopdkt || sMatch.id,
+          nama: sMatch.name || sMatch.nama,
+          role: 'SISWA',
+          roleId: 'RL-026'
+        };
+        try {
+          localStorage.setItem('sista_is_authenticated', 'true');
+          sessionStorage.setItem('sista_is_authenticated', 'true');
+          localStorage.setItem('portal_active_student_id', sMatch.id);
+          sessionStorage.setItem('portal_active_student_id', sMatch.id);
+          localStorage.setItem('current_auth_student_id', sMatch.id);
+          sessionStorage.setItem('current_auth_student_id', sMatch.id);
+          localStorage.setItem('authenticated_user', JSON.stringify(studentUserObj));
+          sessionStorage.setItem('authenticated_user', JSON.stringify(studentUserObj));
+          localStorage.setItem('current_active_role_id', 'RL-026');
+          sessionStorage.setItem('current_active_role_id', 'RL-026');
+          localStorage.setItem('ERP_active_portal', 'erp');
+          sessionStorage.setItem('ERP_active_portal', 'erp');
+        } catch {}
         setActiveRole('RL-026');
         setTimeout(() => {
           setIsLoggingIn(false);
-          login();
+          login(studentUserObj, 'RL-026');
         }, 500);
         return;
       }
@@ -189,10 +228,27 @@ export default function Login({ onOpenPublicPortal }: LoginProps) {
       });
 
       if (tMatch || query === 'dewanguru' || query === 'guru') {
+        const teacherUserObj = {
+          id: tMatch?.id || 'USR_DEWANGURU',
+          username: tMatch?.nip || query,
+          nama: tMatch?.name || tMatch?.nama || 'Dewan Guru Rombel KTCT',
+          role: 'GURU',
+          roleId: 'RL-019'
+        };
+        try {
+          localStorage.setItem('sista_is_authenticated', 'true');
+          sessionStorage.setItem('sista_is_authenticated', 'true');
+          localStorage.setItem('authenticated_user', JSON.stringify(teacherUserObj));
+          sessionStorage.setItem('authenticated_user', JSON.stringify(teacherUserObj));
+          localStorage.setItem('current_active_role_id', 'RL-019');
+          sessionStorage.setItem('current_active_role_id', 'RL-019');
+          localStorage.setItem('ERP_active_portal', 'erp');
+          sessionStorage.setItem('ERP_active_portal', 'erp');
+        } catch {}
         setActiveRole('RL-019');
         setTimeout(() => {
           setIsLoggingIn(false);
-          login();
+          login(teacherUserObj, 'RL-019');
         }, 500);
         return;
       }

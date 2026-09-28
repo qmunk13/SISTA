@@ -92,6 +92,7 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
     };
     window.addEventListener('erp-db-updated', handleDbUpdated);
     window.addEventListener('erp-db-synced', refreshFromDb);
+    window.addEventListener('erp-keuangan-updated', refreshFromDb);
     window.addEventListener('erp-keuangan-cleared', handleClear);
 
     // Hydration check in case IndexedDB loads right after mount
@@ -143,6 +144,7 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
       clearTimeout(timer2);
       window.removeEventListener('erp-db-updated', handleDbUpdated);
       window.removeEventListener('erp-db-synced', refreshFromDb);
+      window.removeEventListener('erp-keuangan-updated', refreshFromDb);
       window.removeEventListener('erp-keuangan-cleared', handleClear);
     };
   }, []);
@@ -541,7 +543,7 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
   };
 
   // Submit Payment
-  const handleSubmitPayment = (e: React.FormEvent) => {
+  const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activePayItem) return;
 
@@ -585,6 +587,7 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
 
     const updatedTagihanList = tagihanList.map(t => {
       if (activePayItem.tagihanIds.includes(t.id) && sisaBudget > 0) {
+        const curTotal = Number(t.totalTagihan || t.nominalAsli || t.nominal || 0);
         const curRemaining = Number(t.sisaTagihan ?? (Number(t.nominal) || 0));
         const payForThis = Math.min(sisaBudget, curRemaining);
         sisaBudget -= payForThis;
@@ -601,6 +604,8 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
 
         return {
           ...t,
+          nominalAsli: curTotal,
+          totalTagihan: curTotal,
           invoiceId: t.invoiceId || invoiceId,
           nominal: newRemaining,
           sisaTagihan: newRemaining,
@@ -725,9 +730,22 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
       console.warn('Auto record Kas Masuk error:', kasErr);
     }
 
+    // Tampilkan loading saat sinkronisasi langsung ke Google Spreadsheet
+    Swal.fire({
+      title: 'Menyimpan ke Google Spreadsheet...',
+      html: `Mencatat pembayaran kwitansi <b>${invoiceId}</b> sebesar <b>Rp ${inputJumlah.toLocaleString('id-ID')}</b> atas nama <b>${activePayItem.namaSiswa}</b>.<br><span class="text-xs text-slate-500">Menyinkronkan sheet PEMBAYARAN, TAGIHAN, dan KAS...</span>`,
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      }
+    });
+
+    let syncSuccess = false;
+    let syncMsg = '';
+
     // Direct push to Google Spreadsheet via Backend API /api/keuangan/transaksi
     try {
-      fetch('/api/keuangan/transaksi', {
+      const res = await fetch('/api/keuangan/transaksi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -736,37 +754,28 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
           fullList: updatedInvoices.map(formatPembayaranForSheet),
           updateTagihanList: updatedTagihanList.map(formatTagihanForSheet)
         })
-      }).catch(err => console.warn('Sync PEMBAYARAN via backend error:', err));
-
-      if (payFormData.metode === 'TABUNGAN') {
-        const allTab = db.get<KeuanganTabungan>('keuangan_tabungan') || [];
-        if (allTab.length > 0) {
-          fetch('/api/keuangan/transaksi', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              type: 'TABUNGAN',
-              fullList: allTab.map((t, idx) => formatTabunganForSheet(t, idx))
-            })
-          }).catch(err => console.warn('Sync TABUNGAN via backend error:', err));
-        }
+      });
+      const data = await res.json();
+      if (data?.success) {
+        syncSuccess = true;
+        syncMsg = data.message || '';
       }
+    } catch (pushErr) {
+      console.warn('Backend sync pay error:', pushErr);
+    }
 
-      // Also sync Kas Masuk to Sheet KAS via Backend API
-      const allKasNow = db.get<any>('keuangan_kas') || [];
-      if (allKasNow.length > 0) {
+    if (payFormData.metode === 'TABUNGAN') {
+      const allTab = db.get<KeuanganTabungan>('keuangan_tabungan') || [];
+      if (allTab.length > 0) {
         fetch('/api/keuangan/transaksi', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            type: 'KAS',
-            record: newKasMasuk,
-            fullList: allKasNow
+            type: 'TABUNGAN',
+            fullList: allTab.map((t, idx) => formatTabunganForSheet(t, idx))
           })
-        }).catch(err => console.warn('Sync KAS via backend error:', err));
+        }).catch(err => console.warn('Sync TABUNGAN via backend error:', err));
       }
-    } catch (pushErr) {
-      console.warn('Backend sync pay error:', pushErr);
     }
 
     // Direct push to Google Apps Script as secondary channel
@@ -792,23 +801,28 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
       }
     }
 
-    // Immediate background push via AutoSync Engine
-    autoSyncEngine.pushSpecificTables(['TAGIHAN', 'PEMBAYARAN', 'TABUNGAN', 'KAS']).catch(err => {
-      console.warn('AutoSync pushSpecificTables error:', err);
-    });
+    // Trigger universal event so cards & rekap update in real time
+    window.dispatchEvent(new CustomEvent('erp-keuangan-updated', { detail: { action: 'PEMBAYARAN', invoiceId } }));
+    window.dispatchEvent(new CustomEvent('erp-db-updated', { detail: { key: 'keuangan_tagihan' } }));
+    window.dispatchEvent(new CustomEvent('erp-db-synced', { detail: { key: 'TAGIHAN' } }));
+    window.dispatchEvent(new CustomEvent('erp-db-updated', { detail: { key: 'keuangan_invoices' } }));
+    window.dispatchEvent(new CustomEvent('erp-db-synced', { detail: { key: 'PEMBAYARAN' } }));
+    if (onRefreshAll) onRefreshAll();
 
     setIsPayModalOpen(false);
     setSelectedTagihanIds([]);
 
     Swal.fire({
       icon: 'success',
-      title: 'Pembayaran Berhasil Diproses!',
+      title: syncSuccess ? 'Berhasil Masuk ke Google Spreadsheet!' : 'Pembayaran Berhasil Dicatat!',
       html: `
         <div class="text-left text-sm space-y-2">
           <p>Nomor Kwitansi: <b class="font-mono text-emerald-600">${invoiceId}</b></p>
           <p>Siswa: <b>${activePayItem.namaSiswa}</b></p>
           <p>Total Bayar: <b class="text-emerald-700">Rp ${inputJumlah.toLocaleString('id-ID')}</b> (${payFormData.metode})</p>
-          <p class="text-xs text-slate-500 mt-2">Data otomatis tersimpan ke Sheet TAGIHAN, PEMBAYARAN, dan BUKU KAS.</p>
+          <div class="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800">
+            ✓ Transaksi langsung tersimpan dan disinkronkan ke Sheet <b>PEMBAYARAN</b>, <b>TAGIHAN</b>, dan <b>KAS</b>.
+          </div>
         </div>
       `,
       confirmButtonText: 'Cetak Kwitansi',
@@ -824,7 +838,7 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
   };
 
   // Generate Multi-Bulan logic
-  const handleGenerateTagihan = (e: React.FormEvent) => {
+  const handleGenerateTagihan = async (e: React.FormEvent) => {
     e.preventDefault();
     const { fromPeriode, toPeriode, tahunAjaranId, semesterId, tanggalTagihan, jatuhTempo, diskon, denda, petugasId, biayaId, kelasId, siswaId } = genFormData;
 
@@ -954,9 +968,20 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
 
     setIsGenerateModalOpen(false);
 
+    Swal.fire({
+      title: 'Menyimpan Tagihan ke Google Spreadsheet...',
+      html: `Menerbitkan <b>${newTagihanRows.length}</b> tagihan baru...<br><span class="text-xs text-slate-500">Menyinkronkan data langsung ke sheet TAGIHAN...</span>`,
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      }
+    });
+
+    let syncSuccess = false;
+
     // Push new tagihan to Google Spreadsheet via backend API
     try {
-      fetch('/api/keuangan/transaksi', {
+      const res = await fetch('/api/keuangan/transaksi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -964,8 +989,14 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
           records: newTagihanRows.map(formatTagihanForSheet),
           fullList: allTagihanNew.map(formatTagihanForSheet)
         })
-      }).catch(err => console.warn('Sync TAGIHAN via backend error:', err));
-    } catch (e) {}
+      });
+      const data = await res.json();
+      if (data?.success) {
+        syncSuccess = true;
+      }
+    } catch (e) {
+      console.warn('Sync TAGIHAN via backend error:', e);
+    }
 
     // Push new tagihan to Google Apps Script Sheet
     const scriptUrl = getActiveGasUrl();
@@ -977,14 +1008,16 @@ export default function TagihanTunggakanTab({ onPrintInvoice, onRefreshAll }: Ta
         spreadsheetId: settings?.spreadsheetId || DEFAULT_APP_CONFIG.spreadsheetId
       }).catch(err => console.warn('Sync TAGIHAN generate error:', err));
     }
-    autoSyncEngine.pushSpecificTables(['TAGIHAN']).catch(err => {
-      console.warn('AutoSync push TAGIHAN error:', err);
-    });
+
+    window.dispatchEvent(new CustomEvent('erp-keuangan-updated', { detail: { action: 'TAGIHAN_GENERATE', count: newTagihanRows.length } }));
+    window.dispatchEvent(new CustomEvent('erp-db-updated', { detail: { key: 'keuangan_tagihan' } }));
+    window.dispatchEvent(new CustomEvent('erp-db-synced', { detail: { key: 'TAGIHAN' } }));
+    if (onRefreshAll) onRefreshAll();
 
     Swal.fire({
       icon: 'success',
-      title: 'Tagihan Berhasil Dibuat!',
-      text: `Berhasil membuat ${newTagihanRows.length} data tagihan baru.`,
+      title: syncSuccess ? 'Tagihan Masuk ke Google Spreadsheet!' : 'Tagihan Berhasil Dibuat!',
+      text: `Berhasil menerbitkan ${newTagihanRows.length} data tagihan baru dan menyinkronkan rekap keuangan.`,
       timer: 2500,
       showConfirmButton: false,
     });

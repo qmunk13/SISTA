@@ -41,6 +41,7 @@ import {
 } from '../../data/simulasiUjianData';
 import { JENIS_UJIAN_LIST, getJenisUjianBadge } from '../../utils/cbtExamTypes';
 import { generatePedagogicalQuestions } from '../../utils/cbtGoogleSheetService';
+import { submitCbtExamResult } from '../../services/cbtSubmissionService';
 
 export interface SimulasiStudentProfile {
   id: string;
@@ -580,6 +581,98 @@ export default function SimulasiUjianTab({
       totalQuestions: selectedPackage.soalList.length
     };
   }, [selectedPackage, userAnswers]);
+
+  // AKSI UNGGULAN: SIMPAN DAN SINKRONKAN HASIL KE GOOGLE SPREADSHEET (Sheet HASIL_UJIAN & NILAI)
+  const [isSavingToSheet, setIsSavingToSheet] = useState(false);
+
+  const handleSaveToSpreadsheet = async () => {
+    if (!selectedPackage) return;
+    
+    Swal.fire({
+      title: 'Menyimpan ke Google Sheets...',
+      html: `Menyinkronkan hasil ujian <b>${activeStudent.name}</b> ke Sheet <b>HASIL_UJIAN</b> & <b>NILAI</b>...`,
+      allowOutsideClick: false,
+      didOpen: () => Swal.showLoading()
+    });
+
+    try {
+      setIsSavingToSheet(true);
+      const idHasil = `HSL-${Date.now()}`;
+      
+      const jawabanDetail = (selectedPackage.soalList || []).map((q, idx) => {
+        const userAns = userAnswers[q.id] || '';
+        const isCorr = Boolean(userAns && userAns.trim().toLowerCase() === q.kunci.trim().toLowerCase());
+        return {
+          nomorSoal: idx + 1,
+          jawabanSiswa: userAns || '-',
+          kunci: q.kunci || '-',
+          isCorrect: isCorr,
+          bobot: Number(q.bobot) || 1
+        };
+      });
+
+      const res = await submitCbtExamResult({
+        idHasil,
+        idUjian: selectedPackage.id || 'UJ-001',
+        idJadwal: selectedPackage.id || 'JDW-001',
+        mapel: selectedPackage.mapel,
+        jenjang: (selectedPackage as any).jenjang || 'SD',
+        kelas: activeStudent.class || selectedPackage.kelas,
+        nisn: activeStudent.nisn || '0000000000',
+        namaSiswa: activeStudent.name,
+        siswaId: activeStudent.id,
+        nilaiMentah: examResult.totalScore,
+        nilaiAkhir: examResult.totalScore,
+        nilai: examResult.totalScore,
+        benar: examResult.correctCount,
+        salah: examResult.wrongCount,
+        totalSoal: examResult.totalQuestions,
+        pelanggaran: 0,
+        status: examResult.totalScore >= 75 ? 'LULUS' : 'REMEDIAL',
+        durasi: formatTime(timeSpentSeconds),
+        tahunAjaran: '2026/2027',
+        semester: 'Ganjil',
+        token: inputToken || '-',
+        guru: (selectedPackage as any).guru || 'Guru Pengampu',
+        jawabanDetail
+      });
+
+      if (res.success) {
+        Swal.fire({
+          icon: 'success',
+          title: 'Berhasil Tersimpan ke Spreadsheet!',
+          html: `
+            <div class="text-left text-xs space-y-2 text-slate-600">
+              <p>Nilai ujian <b>${activeStudent.name}</b> (Nilai: <b>${examResult.totalScore}</b>) berhasil disinkronkan langsung ke Google Spreadsheet.</p>
+              <div class="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-800 font-semibold space-y-1">
+                <p>✓ Tercatat di Sheet <b>HASIL_UJIAN</b></p>
+                <p>✓ Tercatat di Sheet <b>NILAI</b> (Buku Nilai Guru & Rapor)</p>
+                <p>✓ Tercatat di Sheet <b>LOG_UJIAN</b> & Lembar <b>JAWABAN</b></p>
+              </div>
+            </div>
+          `,
+          confirmButtonColor: '#0891b2',
+          confirmButtonText: 'Tutup'
+        });
+      } else {
+        Swal.fire({
+          icon: 'info',
+          title: 'Tersimpan Lokal & Sync GAS Berjalan',
+          text: res.message || 'Hasil tersimpan ke database dan sedang diteruskan ke Google Spreadsheet.',
+          confirmButtonColor: '#0891b2'
+        });
+      }
+    } catch (err: any) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Gagal Menyimpan',
+        text: err?.message || 'Terjadi kesalahan saat menyimpan ke Google Spreadsheet.',
+        confirmButtonColor: '#e11d48'
+      });
+    } finally {
+      setIsSavingToSheet(false);
+    }
+  };
 
   // PROMINENT ACTION: BUANG DATA DUMMY & BERSIHKAN
   const handleDiscardAndReset = () => {
@@ -1574,29 +1667,43 @@ export default function SimulasiUjianTab({
     return (
       <div className="space-y-6 animate-fade-in-up">
         {/* Top Sandbox Notice */}
-        <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="bg-gradient-to-r from-emerald-50 via-cyan-50 to-indigo-50 border border-cyan-200/80 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
-              <Trash2 size={18} />
+            <div className="w-10 h-10 rounded-xl bg-cyan-600 text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+              <CheckCircle2 size={20} />
             </div>
             <div>
-              <h4 className="text-xs font-black text-rose-950">
-                Hasil Ujian Siswa Ini Bersifat Sementara (Data Dummy Uji Coba)
+              <h4 className="text-xs font-black text-slate-900 flex items-center gap-2">
+                <span>Hasil Pengerjaan Ujian Siswa ({activeStudent.name})</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-100 text-cyan-800 border border-cyan-200">
+                  Nilai: {examResult.totalScore}
+                </span>
               </h4>
-              <p className="text-[11px] text-rose-700 mt-0.5">
-                Hasil pengerjaan oleh <b>{activeStudent.name}</b> tidak dicatat ke Google Sheets ataupun database sekolah. Anda dapat membuangnya sekarang.
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                Anda dapat memilih untuk <b>menyimpan nilai ini langsung ke Google Spreadsheet</b> (Sheet HASIL_UJIAN & NILAI) atau membuangnya jika ini hanya simulasi latihan.
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleDiscardAndReset}
-            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer shrink-0"
-          >
-            <Trash2 size={13} />
-            <span>Buang Hasil & Bersihkan Sandbox</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleSaveToSpreadsheet}
+              disabled={isSavingToSheet}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <Send size={13} />
+              <span>{isSavingToSheet ? 'Menyimpan...' : 'Simpan ke Spreadsheet'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDiscardAndReset}
+              className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 size={13} />
+              <span>Buang Data</span>
+            </button>
+          </div>
         </div>
 
         {/* Score Card Banner with Student Identity */}
@@ -1641,6 +1748,15 @@ export default function SimulasiUjianTab({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 justify-center">
+            <button
+              type="button"
+              onClick={handleSaveToSpreadsheet}
+              disabled={isSavingToSheet}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <Send size={14} />
+              <span>{isSavingToSheet ? 'Menyimpan...' : 'Simpan Nilai ke Spreadsheet'}</span>
+            </button>
             <button
               type="button"
               onClick={handleRetakeSimulation}

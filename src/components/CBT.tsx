@@ -53,6 +53,7 @@ import {
 } from 'recharts';
 import { parseCheatLogs } from '../data/cheatLogs';
 import { parseHasilUjian } from '../data/hasilUjian';
+import { submitCbtExamResult } from '../services/cbtSubmissionService';
 
 interface CBTProps {
   user: any;
@@ -1155,6 +1156,35 @@ Q_006,UJ_003,Bahasa Indonesia,PAKET A,VI,PILIHAN_GANDA,Tentukan gagasan pokok da
 
       db.insert<any>('hasil_ujian', newHasil);
 
+      // Siapkan rincian jawaban untuk sheet JAWABAN & ANALISIS_SOAL
+      const jawabanDetail = examSoal.map((s, idx) => {
+        const sId = s.idSoal || '';
+        const userAns = sId ? (answers[sId] || '') : '';
+        const isCorr = Boolean(s.kunci && userAns === s.kunci);
+        return {
+          nomorSoal: s.nomor || idx + 1,
+          jawabanSiswa: userAns || '-',
+          kunci: s.kunci || '-',
+          isCorrect: isCorr,
+          bobot: s.bobot || 1
+        };
+      });
+
+      // Sinkronisasi otomatis langsung ke Google Spreadsheet (Sheet HASIL_UJIAN, NILAI, LOG_UJIAN, JAWABAN)
+      submitCbtExamResult({
+        ...newHasil,
+        namaUjian: activeUjian.mapel,
+        token: examToken || activeUjian.token || '-',
+        guru: activeUjian.proktor || 'Guru Pengampu',
+        jawabanDetail
+      }).then(res => {
+        if (res.success) {
+          console.log('[CBT] Berhasil sync hasil ujian ke Google Spreadsheet:', res.idHasil);
+        }
+      }).catch(err => {
+        console.warn('[CBT] Sinkronisasi hasil ujian error:', err);
+      });
+
       Swal.fire({
         icon: 'success',
         title: 'Ujian Selesai!',
@@ -1164,6 +1194,9 @@ Q_006,UJ_003,Bahasa Indonesia,PAKET A,VI,PILIHAN_GANDA,Tentukan gagasan pokok da
             <p>⚠️ Pelanggaran: <b>${violations}</b></p>
             <p>🏆 Nilai Akhir: <b class="text-blue-600 text-lg">${nilaiAkhir}</b></p>
             <p>📜 Status: <b class="text-emerald-600">${status}</b></p>
+            <div class="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-800 font-semibold mt-2">
+              ✓ Nilai otomatis tersimpan & disinkronkan ke Google Spreadsheet (Sheet <b>HASIL_UJIAN</b> & Buku <b>NILAI</b>).
+            </div>
           </div>
         `,
         confirmButtonText: 'Selesai',

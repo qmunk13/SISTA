@@ -94,6 +94,7 @@ export default function PembayaranInvoiceTab({ onPrintInvoice }: PembayaranInvoi
     window.addEventListener('erp-keuangan-cleared', handleClear);
     window.addEventListener('erp-db-updated', handleDbUpdated);
     window.addEventListener('erp-db-synced', refreshFromDb);
+    window.addEventListener('erp-keuangan-updated', refreshFromDb);
 
     // Hydration check in case IndexedDB loads right after mount
     const timer1 = setTimeout(refreshFromDb, 60);
@@ -142,6 +143,7 @@ export default function PembayaranInvoiceTab({ onPrintInvoice }: PembayaranInvoi
       window.removeEventListener('erp-keuangan-cleared', handleClear);
       window.removeEventListener('erp-db-updated', handleDbUpdated);
       window.removeEventListener('erp-db-synced', refreshFromDb);
+      window.removeEventListener('erp-keuangan-updated', refreshFromDb);
     };
   }, [students]);
 

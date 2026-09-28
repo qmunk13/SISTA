@@ -65,8 +65,8 @@ export default function PortalSiswa({ studentOverrideId, isLockedStudent, onLogo
   // Selected Student state (persisted in session or authenticated student)
   const [selectedStudentId, setSelectedStudentId] = useState<string>(() => {
     if (studentOverrideId) return studentOverrideId;
-    const authUserRaw = typeof window !== 'undefined' && window.sessionStorage 
-      ? sessionStorage.getItem('authenticated_user') 
+    const authUserRaw = typeof window !== 'undefined' 
+      ? (sessionStorage.getItem('authenticated_user') || localStorage.getItem('authenticated_user'))
       : null;
     let authUser: any = null;
     try {
@@ -78,8 +78,8 @@ export default function PortalSiswa({ studentOverrideId, isLockedStudent, onLogo
       return authUser.studentId || authUser.nopdkt || authUser.userId || authUser.id || authUser.username || authUser.nipNisn || '';
     }
 
-    const saved = typeof window !== 'undefined' && window.sessionStorage 
-      ? (sessionStorage.getItem('portal_active_student_id') || sessionStorage.getItem('current_auth_student_id'))
+    const saved = typeof window !== 'undefined' 
+      ? (sessionStorage.getItem('portal_active_student_id') || localStorage.getItem('portal_active_student_id') || sessionStorage.getItem('current_auth_student_id') || localStorage.getItem('current_auth_student_id'))
       : null;
 
     if (saved) return saved;
@@ -208,7 +208,7 @@ export default function PortalSiswa({ studentOverrideId, isLockedStudent, onLogo
       return;
     }
 
-    const authUserRaw = typeof window !== 'undefined' ? sessionStorage.getItem('authenticated_user') : null;
+    const authUserRaw = typeof window !== 'undefined' ? (sessionStorage.getItem('authenticated_user') || localStorage.getItem('authenticated_user')) : null;
     let authUser: any = null;
     try {
       if (authUserRaw) authUser = JSON.parse(authUserRaw);
@@ -229,7 +229,7 @@ export default function PortalSiswa({ studentOverrideId, isLockedStudent, onLogo
     }
 
     const saved = typeof window !== 'undefined' 
-      ? (sessionStorage.getItem('portal_active_student_id') || sessionStorage.getItem('current_auth_student_id'))
+      ? (sessionStorage.getItem('portal_active_student_id') || localStorage.getItem('portal_active_student_id') || sessionStorage.getItem('current_auth_student_id') || localStorage.getItem('current_auth_student_id'))
       : null;
 
     if (saved) {

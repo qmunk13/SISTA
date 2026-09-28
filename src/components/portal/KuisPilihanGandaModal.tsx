@@ -10,6 +10,7 @@ import { db } from '../../data/db';
 import { recordCbtHeartbeat, recordCbtViolation, CBT_MONITOR_KEY } from '../../utils/cbtMonitorHelper';
 import { validateExamSchedule } from '../../utils/examScheduleValidation';
 import { getLastExtractedPdfImages, PdfPageImage } from '../../utils/pdfExtractor';
+import { submitCbtExamResult } from '../../services/cbtSubmissionService';
 
 interface QuestionItem {
   id: number | string;
@@ -738,6 +739,45 @@ export default function KuisPilihanGandaModal({
         !(String(h.idUjian || h.UjianID) === String(tugas.id) && String(h.nisn || h.NISN) === String(sNisn))
       );
       db.set('hasil_ujian', [newHasilUjian, ...filteredHasilUjian]);
+
+      // Sinkronisasi otomatis langsung ke Google Spreadsheet (Sheet HASIL_UJIAN, NILAI, LOG_UJIAN, JAWABAN)
+      const cbtJawabanDetail = questionResults.map((qr, idx) => ({
+        nomorSoal: typeof qr.nomorSoal === 'number' ? qr.nomorSoal : (parseInt(String(qr.nomorSoal), 10) || idx + 1),
+        jawabanSiswa: qr.jawabanSiswa,
+        kunci: qr.kunciJawaban,
+        isCorrect: Boolean(qr.isCorrect === 'BENAR' || qr.isCorrect === true || qr.nilai > 0),
+        bobot: qr.nilai || 1
+      }));
+
+      submitCbtExamResult({
+        idHasil: newHasilUjian.idHasil,
+        idUjian: tugas.id,
+        mapel: tugas.mapel,
+        jenjang: tugas.jenjang || 'SMA',
+        kelas: sClass,
+        nisn: sNisn,
+        namaSiswa: sName,
+        nilaiMentah: finalScaledScore,
+        nilaiAkhir: finalScaledScore,
+        nilai: finalScaledScore,
+        benar: correctCount,
+        salah: wrongCount,
+        totalSoal: totalQuestions,
+        pelanggaran: 0,
+        status: finalScaledScore >= 75 ? 'LULUS' : 'REMEDIAL',
+        durasi: `${tugas.durasi || 60} Menit`,
+        tahunAjaran: '2026/2027',
+        semester: 'Ganjil',
+        token: tugas.token || '-',
+        guru: tugas.guru || 'Guru Pengampu',
+        jawabanDetail: cbtJawabanDetail
+      }).then(res => {
+        if (res.success) {
+          console.log('[KuisPilihanGanda] Berhasil sync hasil ujian ke Google Sheets:', res.idHasil);
+        }
+      }).catch(err => {
+        console.warn('[KuisPilihanGanda] Sync hasil ujian ke Google Sheets error:', err);
+      });
 
     } else {
       // =========================================================================
