@@ -1,0 +1,146 @@
+@import "tailwindcss";
+
+@layer components {
+  .btn {
+    @apply px-4 py-2.5 bg-indigo-600 text-white rounded-xl shadow-lg shadow-indigo-200/50 hover:bg-indigo-700 transition inline-flex items-center justify-center gap-2 font-medium text-sm;
+  }
+  .btn-outline {
+    @apply px-4 py-2 border border-white/80 bg-white/60 text-gray-700 rounded-xl hover:bg-white/80 shadow-sm transition inline-flex items-center justify-center gap-2 font-medium backdrop-blur-md text-sm;
+  }
+  .btn-danger {
+    @apply px-4 py-2.5 bg-rose-500 text-white rounded-xl hover:bg-rose-600 shadow-md transition inline-flex items-center justify-center gap-2 font-medium text-sm;
+  }
+  .input {
+    @apply w-full bg-white/60 backdrop-blur-lg border border-white/80 px-4 py-2.5 rounded-2xl shadow-sm focus:ring-2 focus:ring-indigo-400/50 focus:outline-none text-gray-800 text-sm;
+  }
+  .label {
+    @apply block text-[11px] font-bold text-indigo-700/80 mb-1 uppercase tracking-wider;
+  }
+}
+
+/* Custom scrollbar utility for mobile */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media print {
+  html, body, #root, .h-screen, .flex-1, [class*="overflow-"], main {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    position: static !important;
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  #printable-area, #printable-area *,
+  .printable-container, .printable-container *,
+  .print-document, .print-document *,
+  .printable, .printable *,
+  .print-area, .print-area *,
+  .printable-card, .printable-card *,
+  .printable-document, .printable-document *,
+  .print-modal-content, .print-modal-content *,
+  [data-printable="true"], [data-printable="true"] * {
+    visibility: visible !important;
+  }
+
+  #printable-area, 
+  .printable-container, 
+  .print-document, 
+  .printable, 
+  .print-area, 
+  [data-printable="true"] {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    bottom: auto !important;
+    right: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    background: white !important;
+    color: black !important;
+    z-index: 99999 !important;
+  }
+
+  /* When nested, allow natural document flow */
+  .printable-container .printable-container,
+  .printable-container .printable-card,
+  .printable-container .print-area {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+  }
+
+  ::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  .no-print,
+  nav,
+  aside,
+  header.no-print,
+  button.no-print,
+  .sidebar,
+  [data-print-hide="true"] {
+    display: none !important;
+    visibility: hidden !important;
+  }
+  
+  .print-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    table-layout: fixed !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  .print-table th, .print-table td {
+    padding: 3px 5px !important;
+    font-size: 8.5pt !important;
+    line-height: 1.25 !important;
+    word-break: break-word !important;
+    overflow-wrap: break-word !important;
+    border: 1px solid #000 !important;
+  }
+  
+  /* Standard page layout */
+  @page {
+    size: auto; 
+    margin: 8mm 10mm;
+  }
+
+  .print-single-page {
+    page-break-after: avoid !important;
+    page-break-before: avoid !important;
+    page-break-inside: avoid !important;
+    break-after: avoid !important;
+    break-before: avoid !important;
+    break-inside: avoid !important;
+    max-height: 285mm !important;
+    overflow: hidden !important;
+  }
+
+  .page-break-before {
+    page-break-before: always !important;
+    break-before: page !important;
+  }
+
+  .page-break-after {
+    page-break-after: always !important;
+    break-after: page !important;
+  }
+}

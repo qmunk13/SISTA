@@ -1,0 +1,11 @@
+{
+  "name": "Remix SISTA TAMBORA",
+  "description": "Enterprise Resource Planning (ERP) terintegrasi untuk Sekolah Rombel KTCT dengan modul SPMB, Akademik, CBT/Ujian, Keuangan, BK, Perpustakaan, Inventaris, dan Pengaturan.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
